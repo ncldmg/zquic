@@ -1,6 +1,8 @@
 const std = @import("std");
 const zquic = @import("zquic");
 const posix = std.posix;
+const quic = @import("quic");
+const format = @import("format");
 
 pub const Config = struct {
     address: std.net.Address,
@@ -17,15 +19,16 @@ pub const Config = struct {
     }
 };
 
+/// Handler for parsed QUIC packets
 pub const Handler = struct {
-    onPacketFn: *const fn (data: []const u8, src: std.net.Address) void,
+    onPacketFn: *const fn (packet: quic.Packet, src: std.net.Address) void,
 
-    pub fn init(onPacket: *const fn (data: []const u8, src: std.net.Address) void) Handler {
+    pub fn init(onPacket: *const fn (packet: quic.Packet, src: std.net.Address) void) Handler {
         return .{ .onPacketFn = onPacket };
     }
 
-    pub fn handlePacket(self: Handler, data: []const u8, src: std.net.Address) void {
-        self.onPacketFn(data, src);
+    pub fn handlePacket(self: Handler, packet: quic.Packet, src: std.net.Address) void {
+        self.onPacketFn(packet, src);
     }
 };
 
@@ -57,7 +60,10 @@ pub const Server = struct {
         // Bind to configured address
         try posix.bind(self.sockfd.?, &self.conf.address.any, self.conf.address.getOsSockLen());
 
-        std.debug.print("Server listening on {any}\n", .{self.conf.address});
+        // Format and print server address
+        var addr_buf: [128]u8 = undefined;
+        const addr_str = format.formatAddress(self.conf.address, &addr_buf) catch "unknown";
+        std.debug.print("Server listening on {s}\n", .{addr_str});
     }
 
     pub fn run(self: *Server) !void {
@@ -94,8 +100,16 @@ pub const Server = struct {
                 const data = buf[0..len];
                 const src = std.net.Address.initPosix(@alignCast(&src_addr));
 
-                // Call the handler
-                self.handler.handlePacket(data, src);
+                // Parse QUIC packet
+                const packet = quic.Parser.parse(data) catch |err| {
+                    var src_buf: [128]u8 = undefined;
+                    const src_str = format.formatAddress(src, &src_buf) catch "unknown";
+                    std.debug.print("Failed to parse QUIC packet from {s}: {}\n", .{ src_str, err });
+                    continue;
+                };
+
+                // Call the handler with parsed packet
+                self.handler.handlePacket(packet, src);
             }
         }
     }
@@ -115,8 +129,8 @@ pub const Server = struct {
     }
 };
 
-fn testPacketHandler(data: []const u8, src: std.net.Address) void {
-    _ = data;
+fn testPacketHandler(packet: quic.Packet, src: std.net.Address) void {
+    _ = packet;
     _ = src;
     // Test handler - does nothing
 }
